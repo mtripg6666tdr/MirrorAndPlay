@@ -1,5 +1,7 @@
 # MirrorAndPlay
 
+> *-- **Mirror** YouTube **And** **Play** it on **And**roid --*
+
 **MirrorAndPlay** is a lightweight Windows desktop streaming application. It captures the MirrorAndPlay window hosting an embedded YouTube player and system audio in real time and streams it directly to an external client (such as an Android device running VLC) via HTTP MPEG-TS.
 
 Connect an outdated smartphone to your PC and place it next to your monitor to enjoy videos on a mini display while you work.
