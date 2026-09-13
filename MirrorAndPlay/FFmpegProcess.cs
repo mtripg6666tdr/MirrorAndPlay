@@ -5,13 +5,13 @@ using System.Threading.Tasks;
 
 namespace MirrorAndPlay
 {
-    internal class FFmpegProcess(string _audioStreamerPipename, int port = 8912) : IDisposable
+    internal class FFmpegProcess(string _audioStreamerPipename) : IDisposable, IFFmpegProcess
     {
-        public readonly int FFmpegPort = port;
         private readonly string _audioStreamerPipeName = _audioStreamerPipename;
         public Process? FFmpegInternalProcess { get; private set; }
 
         public Stream StandardInputStream => this.FFmpegInternalProcess?.StandardInput.BaseStream ?? throw new InvalidOperationException("FFmpeg process is not started.");
+        public Stream StandardOutputStream => this.FFmpegInternalProcess?.StandardOutput.BaseStream ?? throw new InvalidOperationException("FFmpeg process is not started.");
 
         private int? _width;
         private int? _height;
@@ -51,9 +51,10 @@ namespace MirrorAndPlay
                             $"-b:v 1500k -maxrate 1800k -bufsize 3000k -r 30 -g 30 " +
                             $"-c:a aac -b:a 128k -ar 48000 -ac 2 " +
                             $"-max_muxing_queue_size 1024 " +
-                            $"-muxdelay 0.1 -f mpegts -listen 1 http://0.0.0.0:{FFmpegPort}/live",
+                            $"-muxdelay 0.1 -f mpegts -flush_packets 1 -",
                 UseShellExecute = false,
                 RedirectStandardInput = true,
+                RedirectStandardOutput = true,
 #if DEBUG
                 RedirectStandardError = true,
 #endif
@@ -93,7 +94,6 @@ namespace MirrorAndPlay
         private void OnProcessExited(object? sender, EventArgs e)
         {
             this.FFmpegInternalProcess?.Dispose();
-            this.FFmpegInternalProcess = null;
         }
 
         public void Dispose(bool disposing)
@@ -102,6 +102,7 @@ namespace MirrorAndPlay
             {
                 this.Kill();
                 this.FFmpegInternalProcess?.Dispose();
+                this.FFmpegInternalProcess = null;
             }
         }
 

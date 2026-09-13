@@ -92,7 +92,7 @@ namespace MirrorAndPlay
                 return;
             }
 
-            var streamUrl = $"http://{targetIp}:{port}/live";
+            var streamUrl = $"http://{targetIp}:{port}/live/";
             Debug.WriteLine($"[ADB] 接続先ストリームURL: {streamUrl}");
 
             var intentArgs = $"shell am start -a android.intent.action.VIEW " +

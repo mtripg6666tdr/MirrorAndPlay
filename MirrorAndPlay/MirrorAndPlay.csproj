@@ -6,9 +6,14 @@
     <UseWPF>true</UseWPF>
 	<ImplicitUsings>disable</ImplicitUsings>
 	<AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+	<Configurations>Debug;Release;Debug (with DevTools)</Configurations>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
     <DebugType>portable</DebugType>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug (with DevTools)|AnyCPU'">
+    <DebugType>portable</DebugType>
+    <DefineConstants>$(DefineConstants);DEBUG;DEBUG_WITH_DEVTOOLS</DefineConstants>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
     <DebugType>none</DebugType>

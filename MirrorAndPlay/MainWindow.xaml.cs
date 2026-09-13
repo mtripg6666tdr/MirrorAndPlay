@@ -19,8 +19,10 @@ namespace MirrorAndPlay
     {
         private const int TargetWidth = 960;
         private const int TargetHeight = 540;
+        private readonly int Port;
         private readonly FFmpegProcess ffmpeg = new(AudioStreamer.PipeName);
         private readonly AudioStreamer audioStreamer = new();
+        private readonly HttpServer httpServer;
 
         private ID3D11Device? _device;
         private ID3D11DeviceContext? _context;
@@ -32,13 +34,16 @@ namespace MirrorAndPlay
         private GpuScaler? _gpuScaler;
         private ID3D11Texture2D? _latestFrameTexture;
         private Win32Interops.ClientCropArea _cropArea;
-        private CancellationTokenSource? _renderCts;
+        private CancellationTokenSource? _cts;
         private readonly object _textureLock = new();
         private bool _hasFirstFrame = false;
 
         public MainWindow()
         {
             this.InitializeComponent();
+
+            this.Port = 8912;
+            this.httpServer = new(this.Port, this.ffmpeg);
         }
 
         public async void Window_Loaded(object sender, RoutedEventArgs e)
@@ -70,77 +75,112 @@ namespace MirrorAndPlay
 
             this.ffmpeg.Spawn(width: this._gpuScaler.OutputWidth, height: this._gpuScaler.OutputHeight);
 
+            this.httpServer.Start();
+
             this.StartCapture();
+
+            await Task.Delay(1000);
+
             this.StartStreamPushLoop();
 
-            await Task.Delay(1000); // Wait for a second to ensure everything is set up
+            await Task.Delay(1000);
 
-            await AdbUtils.LaunchVlcStreamAsync(this.ffmpeg.FFmpegPort);
+            await AdbUtils.LaunchVlcStreamAsync(this.Port);
         }
 
         public void Window_Closed(object sender, EventArgs e) => this.Dispose();
 
-        private void InitializeAutoSkipper()
+        private async void InitializeAutoSkipper()
         {
-            const string AdSkipperScript = @"
-(function() {
-    if (window.top !== window) {
-        return;
-    }
-
-    console.log(""[AutoSkipper] injected"", location.href);
-
-    const SKIP_AFTER = 5000;
-
-    let timer = null;
-    let wasAdPlaying = false;
-
-    setInterval(() => {
-      const ad =
-        document.querySelector("".ytp-ad-visit-advertiser-button"") ||
-        document.querySelector("".ytp-visit-advertiser-link"") ||
-        document.querySelector("".ytp-ad-badge"");
-
-      const isAdPlaying = !!ad;
-
-      if (isAdPlaying && !wasAdPlaying) {
-        // 広告開始
-        console.log(""[AutoSkipper] ad started"", location.href);
-        timer = setTimeout(() => {
-          console.log(""[AutoSkipper] skipping ad"", location.href);
-          const buttons = document.querySelectorAll(
-            "".videoAdUiSkipButton, "" +
-            "".ytp-ad-skip-button.ytp-button, "" +
-            "".ytp-ad-skip-button-modern.ytp-button, "" +
-            "".ytp-skip-ad-button""
-          );
-
-          console.log(""[AutoSkipper] found skip buttons"", buttons);
-
-          buttons.forEach((button) => {
-            const evObj = document.createEvent(""Events"");
-            evObj.initEvent(""click"", true, false);
-            button.dispatchEvent(evObj);
-          });
-        }, SKIP_AFTER + 200);
-      }
-
-      if (!isAdPlaying && wasAdPlaying) {
-        // 広告終了
-        console.log(""[AutoSkipper] ad ended"", location.href);
-        clearTimeout(timer);
-        timer = null;
-      }
-
-      wasAdPlaying = isAdPlaying;
-    }, 200);
-})();
-";
-
-            _ = this.webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(AdSkipperScript);
-            _ = this.webView.CoreWebView2.ExecuteScriptAsync(AdSkipperScript);
-
+#if DEBUG_WITH_DEVTOOLS
             this.webView.CoreWebView2.OpenDevToolsWindow();
+#endif
+
+            const int tickDelayMs = 200;
+
+            var token = this._cts?.Token;
+
+            var wasAdPlaying = false;
+            var skipAdRestCount = -1;
+
+            while (true)
+            {
+                if (token?.IsCancellationRequested == true)
+                {
+                    break;
+                }
+
+                await Task.Delay(tickDelayMs);
+
+                if (skipAdRestCount >= 0)
+                {
+                    skipAdRestCount--;
+                    if (skipAdRestCount <= 0)
+                    {
+                        System.Diagnostics.Debug.WriteLine("[AutoSkipper] Skipping ad...");
+
+                        var rawResult = (await this.webView.CoreWebView2.ExecuteScriptAsync(@"
+(function(){
+    const button = document.querySelector(
+        "".videoAdUiSkipButton, "" +
+        "".ytp-ad-skip-button.ytp-button, "" +
+        "".ytp-ad-skip-button-modern.ytp-button, "" +
+        "".ytp-skip-ad-button""
+    );
+
+    const rect = button.getBoundingClientRect();
+
+    const posX = Math.round(rect.left + rect.width / 2);
+    const posY = Math.round(rect.top + rect.height / 2);
+
+    return `${posX}:${posY}`;
+})()
+"));
+                        var result = rawResult.Substring(1, rawResult.Length - 2).Split(':');
+                        var posX = result[0];
+                        var posY = result[1];
+
+                        System.Diagnostics.Debug.WriteLine("[AutoSkipper] Clicking skip button at position: " + posX + ", " + posY);
+
+                        await this.webView.CoreWebView2.CallDevToolsProtocolMethodAsync(
+                            "Input.dispatchMouseEvent",
+                            $@"{{""type"":""mousePressed"",""x"":{posX},""y"":{posY},""button"":""left"",""clickCount"":1}}");
+
+                        await this.webView.CoreWebView2.CallDevToolsProtocolMethodAsync(
+                            "Input.dispatchMouseEvent",
+                            $@"{{""type"":""mouseReleased"",""x"":{posX},""y"":{posY},""button"":""left""}}");
+
+                        skipAdRestCount = -1;
+                    }
+                }
+
+                var isAdPlaying = await this.webView.CoreWebView2.ExecuteScriptAsync(@"
+(function(){
+    const ad =
+            document.querySelector("".ytp-ad-visit-advertiser-button"") ||
+            document.querySelector("".ytp-visit-advertiser-link"") ||
+            document.querySelector("".ytp-ad-badge"");
+
+    const isPlaying = !!ad;
+
+    return isPlaying ? ""1"" : ""0"";
+})()
+") == @"""1""";
+
+                if (isAdPlaying && !wasAdPlaying)
+                {
+                    System.Diagnostics.Debug.WriteLine("[AutoSkipper] Ad detected, waiting 5.0 seconds before skipping...");
+                    skipAdRestCount = 5000 / tickDelayMs; // 5秒待機
+                }
+
+                if (!isAdPlaying && wasAdPlaying)
+                {
+                    System.Diagnostics.Debug.WriteLine("[AutoSkipper] Ad finished.");
+                    skipAdRestCount = -1;
+                }
+
+                wasAdPlaying = isAdPlaying;
+            }
         }
 
         private void InitializeCapture(IntPtr hwnd)
@@ -218,8 +258,8 @@ namespace MirrorAndPlay
 
         private void StartStreamPushLoop()
         {
-            this._renderCts = new CancellationTokenSource();
-            var token = this._renderCts.Token;
+            this._cts = new CancellationTokenSource();
+            var token = this._cts.Token;
 
             Task.Run(async () =>
             {
@@ -268,9 +308,10 @@ namespace MirrorAndPlay
         {
             if (disposing)
             {
-                this._renderCts?.Cancel();
+                this._cts?.Cancel();
                 this.ffmpeg.Dispose();
                 this.audioStreamer.Dispose();
+                this.httpServer.Dispose();
                 this._gpuScaler?.Dispose();
                 this._latestFrameTexture?.Dispose();
                 this._device?.Dispose();
