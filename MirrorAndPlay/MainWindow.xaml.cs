@@ -1,9 +1,9 @@
 ﻿using System;
+using System.Drawing;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Interop;
-using System.Windows.Media.Media3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
 using Windows.Graphics.Capture;
@@ -17,34 +17,21 @@ namespace MirrorAndPlay
     /// </summary>
     public partial class MainWindow : Window, IDisposable
     {
-        private readonly FFmpegUtils ffmpeg = new(AudioStreamer.PipeName);
+        private const int TargetWidth = 960;
+        private const int TargetHeight = 540;
+        private readonly FFmpegProcess ffmpeg = new(AudioStreamer.PipeName);
         private readonly AudioStreamer audioStreamer = new();
+
         private ID3D11Device? _device;
         private ID3D11DeviceContext? _context;
         private IDirect3DDevice? _winrtDevice;
         private Direct3D11CaptureFramePool? _framePool;
         private GraphicsCaptureSession? _session;
         private GraphicsCaptureItem? _captureItem;
-        private byte[]? _pixelBuffer;
 
-        private ID3D11Texture2D? _stagingTexture;
-        private ID3D11Texture2D StagingTexture
-        {
-            get
-            {
-                if (this._stagingTexture == null)
-                {
-                    this.InitializeStagingTexture();
-                }
-
-                return this._stagingTexture!;
-            }
-            set
-            {
-                this._stagingTexture = value;
-            }
-        }
-
+        private GpuScaler? _gpuScaler;
+        private ID3D11Texture2D? _latestFrameTexture;
+        private Win32Interops.ClientCropArea _cropArea;
         private CancellationTokenSource? _renderCts;
         private readonly object _textureLock = new();
         private bool _hasFirstFrame = false;
@@ -56,19 +43,34 @@ namespace MirrorAndPlay
 
         public async void Window_Loaded(object sender, RoutedEventArgs e)
         {
-            var hwnd = new WindowInteropHelper(this).Handle;
+            if (this.webView.CoreWebView2 == null)
+            {
+                this.webView.CoreWebView2InitializationCompleted += (s, args) =>
+                {
+                    if (args.IsSuccess)
+                    {
+                        this.InitializeAutoSkipper();
+                    }
+                };
+            }
+            else
+            {
+                this.InitializeAutoSkipper();
+            }
+
+                var hwnd = new WindowInteropHelper(this).Handle;
 
             this.InitializeCapture(hwnd);
 
+            this._gpuScaler = new(this._device!, TargetWidth, TargetHeight);
+
             this.audioStreamer.Start();
 
-            this.ffmpeg.Spawn(
-                width: this._captureItem!.Size.Width,
-                height: this._captureItem!.Size.Height,
-                cropArea: Win32Interops.GetClientCropArea(hwnd));
+            this._cropArea = Win32Interops.GetClientCropArea(hwnd);
+
+            this.ffmpeg.Spawn(width: this._gpuScaler.OutputWidth, height: this._gpuScaler.OutputHeight);
 
             this.StartCapture();
-
             this.StartStreamPushLoop();
 
             await Task.Delay(1000); // Wait for a second to ensure everything is set up
@@ -76,31 +78,69 @@ namespace MirrorAndPlay
             await AdbUtils.LaunchVlcStreamAsync(this.ffmpeg.FFmpegPort);
         }
 
-        public void Window_Closed(object sender, EventArgs e)
+        public void Window_Closed(object sender, EventArgs e) => this.Dispose();
+
+        private void InitializeAutoSkipper()
         {
-            this.Dispose();
-        }
+            const string AdSkipperScript = @"
+(function() {
+    if (window.top !== window) {
+        return;
+    }
 
-        private void InitializeStagingTexture()
-        {
-            if (this._captureItem == null) throw new InvalidOperationException("Capture item is not initialized.");
-            if (this._device == null) throw new InvalidOperationException("D3D11 device is not initialized.");
+    console.log(""[AutoSkipper] injected"", location.href);
 
-            var desc = new Texture2DDescription
-            {
-                Width = (uint)this._captureItem.Size.Width,
-                Height = (uint)this._captureItem.Size.Height,
-                MipLevels = 1,
-                ArraySize = 1,
-                Format = Format.B8G8R8A8_UNorm,
-                SampleDescription = new(1, 0),
-                Usage = ResourceUsage.Staging,
-                BindFlags = BindFlags.None,
-                CPUAccessFlags = CpuAccessFlags.Read,
-                MiscFlags = ResourceOptionFlags.None,
-            };
+    const SKIP_AFTER = 5000;
 
-            this.StagingTexture = this._device.CreateTexture2D(desc);
+    let timer = null;
+    let wasAdPlaying = false;
+
+    setInterval(() => {
+      const ad =
+        document.querySelector("".ytp-ad-visit-advertiser-button"") ||
+        document.querySelector("".ytp-visit-advertiser-link"") ||
+        document.querySelector("".ytp-ad-badge"");
+
+      const isAdPlaying = !!ad;
+
+      if (isAdPlaying && !wasAdPlaying) {
+        // 広告開始
+        console.log(""[AutoSkipper] ad started"", location.href);
+        timer = setTimeout(() => {
+          console.log(""[AutoSkipper] skipping ad"", location.href);
+          const buttons = document.querySelectorAll(
+            "".videoAdUiSkipButton, "" +
+            "".ytp-ad-skip-button.ytp-button, "" +
+            "".ytp-ad-skip-button-modern.ytp-button, "" +
+            "".ytp-skip-ad-button""
+          );
+
+          console.log(""[AutoSkipper] found skip buttons"", buttons);
+
+          buttons.forEach((button) => {
+            const evObj = document.createEvent(""Events"");
+            evObj.initEvent(""click"", true, false);
+            button.dispatchEvent(evObj);
+          });
+        }, SKIP_AFTER + 200);
+      }
+
+      if (!isAdPlaying && wasAdPlaying) {
+        // 広告終了
+        console.log(""[AutoSkipper] ad ended"", location.href);
+        clearTimeout(timer);
+        timer = null;
+      }
+
+      wasAdPlaying = isAdPlaying;
+    }, 200);
+})();
+";
+
+            _ = this.webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(AdSkipperScript);
+            _ = this.webView.CoreWebView2.ExecuteScriptAsync(AdSkipperScript);
+
+            this.webView.CoreWebView2.OpenDevToolsWindow();
         }
 
         private void InitializeCapture(IntPtr hwnd)
@@ -117,12 +157,24 @@ namespace MirrorAndPlay
             this._context = context;
 
             var winrtDevice = Direct3D11Helper.CreateDirect3DDevice(device);
-
             this._winrtDevice = winrtDevice;
 
             var item = CaptureHelper.CreateItemForWindow(hwnd);
-
             this._captureItem = item;
+
+            var desc = new Texture2DDescription
+            {
+                Width = (uint)item.Size.Width,
+                Height = (uint)item.Size.Height,
+                MipLevels = 1,
+                ArraySize = 1,
+                Format = Format.B8G8R8A8_UNorm,
+                SampleDescription = new(1, 0),
+                Usage = ResourceUsage.Default,
+                BindFlags = BindFlags.ShaderResource,
+                CPUAccessFlags = CpuAccessFlags.None,
+            };
+            this._latestFrameTexture = device.CreateTexture2D(desc);
 
             var framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
                 winrtDevice,
@@ -133,9 +185,7 @@ namespace MirrorAndPlay
             this._framePool = framePool;
 
             var session = framePool.CreateCaptureSession(item);
-
             this._session = session;
-
             session.IsBorderRequired = false;
             session.IsCursorCaptureEnabled = false;
 
@@ -161,21 +211,13 @@ namespace MirrorAndPlay
 
             lock (this._textureLock)
             {
-                this._context.CopyResource(this.StagingTexture, frameTexture);
+                this._context.CopyResource(this._latestFrameTexture, frameTexture);
                 this._hasFirstFrame = true;
             }
         }
 
         private void StartStreamPushLoop()
         {
-            if (this._context == null || this._captureItem == null) throw new InvalidOperationException("Capture context or item is not initialized.");
-
-            var width = this._captureItem.Size.Width;
-            var height = this._captureItem.Size.Height;
-            var totalBytes = width * height * 4; // Assuming 4 bytes per pixel (BGRA)
-
-            this._pixelBuffer = new byte[totalBytes];
-
             this._renderCts = new CancellationTokenSource();
             var token = this._renderCts.Token;
 
@@ -191,77 +233,33 @@ namespace MirrorAndPlay
                         continue;
                     }
 
-                    this.PushFrameSync(width, height, totalBytes);
+                    this.PushFrameSync();
                 }
             });
         }
 
-        private void PushFrameSync(int width, int height, int totalBytes)
+        private void PushFrameSync()
         {
-            if (this._context == null || this._pixelBuffer == null) return;
+            if (this._gpuScaler == null || this._latestFrameTexture == null) return;
 
-            var expectedRowBytesSize = width * 4;
-            var copied = false;
+            var cropRect = new Rectangle(this._cropArea.X, this._cropArea.Y, this._cropArea.Width, this._cropArea.Height);
 
-            lock (this._textureLock)
+            try
             {
-                var mapped = this._context.Map(this.StagingTexture, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
-
-                try
+                lock (this._textureLock)
                 {
-                    if (mapped.RowPitch == expectedRowBytesSize)
-                    {
-                        var totalBytesSize = expectedRowBytesSize * height;
-
-                        mapped.AsSpan<byte>(totalBytesSize).CopyTo(this._pixelBuffer);
-                    }
-                    else
-                    {
-                        var fullSpan = mapped.AsSpan((int)mapped.RowPitch * height);
-
-                        for (var y = 0; y < height; y++)
-                        {
-                            // 各行の先頭のオフセットを計算する
-                            // すべての行が一次元のバイト列になっているので
-                            var rowStart = y * (int)mapped.RowPitch;
-
-                            var src = fullSpan.Slice(rowStart, expectedRowBytesSize);
-                            var dest = this._pixelBuffer.AsSpan(y * expectedRowBytesSize, expectedRowBytesSize);
-                            src.CopyTo(dest);
-                        }
-                    }
-
-                    copied = true;
-                }
-                catch
-                {
-                    // Handle exceptions if necessary
-
-                    if (!this.ffmpeg.GetIsAlive())
-                    {
-                        this.audioStreamer.ResetPipeServer();
-                        this.ffmpeg.Spawn();
-                    }
-                }
-                finally
-                {
-                    this._context.Unmap(this.StagingTexture, 0);
+                    this._gpuScaler.ProcessFrame(
+                        this._latestFrameTexture,
+                        cropRect,
+                        this.ffmpeg.StandardInputStream);
                 }
             }
-
-            if (copied)
+            catch
             {
-                try
+                if (!this.ffmpeg.GetIsAlive())
                 {
-                    this.ffmpeg.StandardInputStream.Write(this._pixelBuffer, 0, totalBytes);
-                }
-                catch
-                {
-                    if (!this.ffmpeg.GetIsAlive())
-                    {
-                        this.audioStreamer.ResetPipeServer();
-                        this.ffmpeg.Spawn();
-                    }
+                    this.audioStreamer.ResetPipeServer();
+                    this.ffmpeg.Spawn();
                 }
             }
         }
@@ -273,6 +271,8 @@ namespace MirrorAndPlay
                 this._renderCts?.Cancel();
                 this.ffmpeg.Dispose();
                 this.audioStreamer.Dispose();
+                this._gpuScaler?.Dispose();
+                this._latestFrameTexture?.Dispose();
                 this._device?.Dispose();
                 this._context?.Dispose();
                 this._winrtDevice?.Dispose();
