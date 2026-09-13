@@ -18,7 +18,7 @@ By leveraging the Windows Graphics Capture API, Direct3D 11 (`Vortice.Direct3D11
 * **Intel QSV Hardware Acceleration**: Employs FFmpeg's Intel Quick Sync Video (`h264_qsv`) encoder for ultra-fast, low-overhead H.264 video compression.
 * **HTTP MPEG-TS Streaming**: Receives an MPEG-TS live stream from FFmpeg and a built-in lightweight HTTP server serves it on port `8912`.
 * **Automated Android Playback via ADB**: Automatically triggers VLC on an ADB-connected Android device to open and play the live stream upon launch.
-* **Auto-Recovery**: Monitors the FFmpeg process and named pipe states, automatically respawning and reconnecting if a pipeline fault occurs.
+* **Play it anywhere**: It's okay if the adb connection or the ethernet via USB tethering is not available. You can manually type the ip address of the host PC and play it anywhere on your LAN as its need.
 
 ---
 
