@@ -136,19 +136,22 @@ namespace MirrorAndPlay
     return `${posX}:${posY}`;
 })()
 "));
-                        var result = rawResult.Substring(1, rawResult.Length - 2).Split(':');
-                        var posX = result[0];
-                        var posY = result[1];
+                        if (rawResult.Contains(':'))
+                        {
+                            var result = rawResult.Substring(1, rawResult.Length - 2).Split(':');
+                            var posX = result[0];
+                            var posY = result[1];
 
-                        System.Diagnostics.Debug.WriteLine("[AutoSkipper] Clicking skip button at position: " + posX + ", " + posY);
+                            System.Diagnostics.Debug.WriteLine("[AutoSkipper] Clicking skip button at position: " + posX + ", " + posY);
 
-                        await this.webView.CoreWebView2.CallDevToolsProtocolMethodAsync(
-                            "Input.dispatchMouseEvent",
-                            $@"{{""type"":""mousePressed"",""x"":{posX},""y"":{posY},""button"":""left"",""clickCount"":1}}");
+                            await this.webView.CoreWebView2.CallDevToolsProtocolMethodAsync(
+                                "Input.dispatchMouseEvent",
+                                $@"{{""type"":""mousePressed"",""x"":{posX},""y"":{posY},""button"":""left"",""clickCount"":1}}");
 
-                        await this.webView.CoreWebView2.CallDevToolsProtocolMethodAsync(
-                            "Input.dispatchMouseEvent",
-                            $@"{{""type"":""mouseReleased"",""x"":{posX},""y"":{posY},""button"":""left""}}");
+                            await this.webView.CoreWebView2.CallDevToolsProtocolMethodAsync(
+                                "Input.dispatchMouseEvent",
+                                $@"{{""type"":""mouseReleased"",""x"":{posX},""y"":{posY},""button"":""left""}}");
+                        }
 
                         skipAdRestCount = -1;
                     }
