@@ -16,7 +16,7 @@ By leveraging the Windows Graphics Capture API, Direct3D 11 (`Vortice.Direct3D11
 * **Lightweight Hardware Capture**: Utilizes `Windows.Graphics.Capture` and Direct3D 11 to acquire video frames directly on the GPU.
 * **Continuous Audio Loopback**: Captures desktop audio using `NAudio` (WASAPI Loopback). Features a synthetic silence injector to prevent capture stalls during silent passages.
 * **Intel QSV Hardware Acceleration**: Employs FFmpeg's Intel Quick Sync Video (`h264_qsv`) encoder for ultra-fast, low-overhead H.264 video compression.
-* **HTTP MPEG-TS Streaming**: Serves an MPEG-TS live stream directly from FFmpeg's built-in HTTP server on port `8912`.
+* **HTTP MPEG-TS Streaming**: Receives an MPEG-TS live stream from FFmpeg and a built-in lightweight HTTP server serves it on port `8912`.
 * **Automated Android Playback via ADB**: Automatically triggers VLC on an ADB-connected Android device to open and play the live stream upon launch.
 * **Auto-Recovery**: Monitors the FFmpeg process and named pipe states, automatically respawning and reconnecting if a pipeline fault occurs.
 
@@ -25,14 +25,14 @@ By leveraging the Windows Graphics Capture API, Direct3D 11 (`Vortice.Direct3D11
 ## Architecture
 
 ```text
-[ Target Window ] ──(Graphics Capture)──> [ D3D11 Texture2D ] ──(Raw BGRA / Staging)──┐
-                                                                                      │ (stdin)
-[ System Audio  ] ──(WASAPI Loopback)───> [ Named Pipe Server ] ─(Named Pipe / f32le)─┴─> [ FFmpeg (h264_qsv) ]
-                                                                                                  │
-                                                                                        (MPEG-TS over HTTP)
-                                                                                                  │
-                                                                                                  ▼
-[ Android Device (VLC) ] <────────────────────────(ADB Intent Trigger)──────────────────────────────┘
+[ Target Window ] ──(Graphics Capture)──> [ D3D11 Texture2D ] ──(Raw BGRA / Light editing)──┐
+                                                                                            │ (stdin)
+[ System Audio  ] ──(WASAPI Loopback)───> [ Named Pipe Server ] ─(Named Pipe / f32le) ──────┴─> [ FFmpeg (h264_qsv) ]
+                                                                                                           │
+                                                                                                  (MPEG-TS over HTTP)
+                                                                                                           │
+                                                                                                           ▼
+[ Android Device (VLC) ] <────────────────────────(ADB Intent Trigger)─────────────────────────────────────┘
 
 ```
 
@@ -89,5 +89,5 @@ dotnet run -c Release
 1. **Initialization**: On startup, the main window obtains the target window handle (`HWND`) and initializes a `Direct3D11CaptureFramePool` session.
 2. **Audio Pipeline**: An asynchronous named pipe server (`\\.\pipe\mirror_audio_pipe`) is established. WASAPI loopback capture starts feeding raw 32-bit floating-point PCM audio into this pipe.
 3. **Encoder Launch**: FFmpeg is spawned as a child process, consuming raw video frames via standard input (`stdin`) and audio frames via the named pipe.
-4. **Broadcast**: FFmpeg exposes an HTTP endpoint at `[http://0.0.0.0:8912/live](http://0.0.0.0:8912/live)`.
+4. **Broadcast**: This app exposes an HTTP endpoint at `[http://0.0.0.0:8912/live](http://0.0.0.0:8912/live)`. It receives the video frames via the ffmpeg's standard output and transfers it to a single video client.
 5. **Client Trigger**: An ADB intent command launches VLC on the connected Android device, instructing it to open and buffer the stream.
